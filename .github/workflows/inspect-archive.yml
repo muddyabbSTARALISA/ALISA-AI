@@ -1,40 +1,61 @@
-name: Inspect ALICE AI archive
+name: Build ALICE AI for Windows
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: read
 
 jobs:
-  inspect:
+  build:
     runs-on: windows-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Inspect uploaded ZIP
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Extract project archive
         shell: pwsh
         run: |
-          $zip = Get-ChildItem -Path . -Filter "ALICE_AI_WindowsBuild.zip" -Recurse | Select-Object -First 1
-          if (-not $zip) { throw "ALICE_AI_WindowsBuild.zip was not found." }
-          $dest = Join-Path $env:RUNNER_TEMP "alice_archive"
-          Expand-Archive -LiteralPath $zip.FullName -DestinationPath $dest -Force
-          $report = Join-Path $env:GITHUB_WORKSPACE "archive_manifest.txt"
-          "ARCHIVE: $($zip.FullName)" | Out-File $report -Encoding utf8
-          "FILES:" | Out-File $report -Append -Encoding utf8
-          Get-ChildItem -Path $dest -Recurse -File |
-            ForEach-Object {
-              $relative = $_.FullName.Substring($dest.Length).TrimStart('\','/')
-              "{0} | {1} bytes" -f $relative, $_.Length
-            } | Out-File $report -Append -Encoding utf8
-          "ROOT FILES:" | Out-File $report -Append -Encoding utf8
-          Get-ChildItem -Path $dest -Force |
-            ForEach-Object { $_.Name } | Out-File $report -Append -Encoding utf8
-          Get-Content $report
+          $zip = Join-Path $env:GITHUB_WORKSPACE "ALICE_AI_WindowsBuild.zip"
+          if (!(Test-Path $zip)) { throw "ALICE_AI_WindowsBuild.zip was not found in the repository root." }
+          $dest = Join-Path $env:RUNNER_TEMP "alice_src"
+          Expand-Archive -LiteralPath $zip -DestinationPath $dest -Force
+          $project = Join-Path $dest "ALICE_AI_WindowsBuild"
+          if (!(Test-Path (Join-Path $project "main.py"))) { throw "main.py was not found after extracting the archive." }
+          "PROJECT_ROOT=$project" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Get-ChildItem $project -Force | Select-Object Name,Mode
 
-      - name: Upload archive manifest
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r "$env:PROJECT_ROOT/requirements.txt"
+          python -m pip install pyinstaller
+
+      - name: Check Python syntax
+        shell: pwsh
+        run: |
+          python -m compileall -q "$env:PROJECT_ROOT/main.py" "$env:PROJECT_ROOT/alice"
+
+      - name: Build standalone EXE
+        shell: pwsh
+        run: |
+          Set-Location $env:PROJECT_ROOT
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name "ALICE AI" --collect-all PySide6 --hidden-import shiboken6 --add-data "assets;assets" --add-data "personality;personality" main.py
+          if (!(Test-Path "dist/ALICE AI.exe")) { throw "EXE was not created." }
+          Get-Item "dist/ALICE AI.exe" | Format-List Name,Length
+
+      - name: Upload Windows EXE
         uses: actions/upload-artifact@v4
         with:
-          name: alice-archive-manifest
-          path: archive_manifest.txt
+          name: ALICE-AI-Windows
+          path: ${{ runner.temp }}/alice_src/ALICE_AI_WindowsBuild/dist/ALICE AI.exe
           if-no-files-found: error
+          retention-days: 14
