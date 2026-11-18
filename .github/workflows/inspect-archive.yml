@@ -1,0 +1,40 @@
+name: Inspect ALICE AI archive
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Inspect uploaded ZIP
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem -Path . -Filter "ALICE_AI_WindowsBuild.zip" -Recurse | Select-Object -First 1
+          if (-not $zip) { throw "ALICE_AI_WindowsBuild.zip was not found." }
+          $dest = Join-Path $env:RUNNER_TEMP "alice_archive"
+          Expand-Archive -LiteralPath $zip.FullName -DestinationPath $dest -Force
+          $report = Join-Path $env:GITHUB_WORKSPACE "archive_manifest.txt"
+          "ARCHIVE: $($zip.FullName)" | Out-File $report -Encoding utf8
+          "FILES:" | Out-File $report -Append -Encoding utf8
+          Get-ChildItem -Path $dest -Recurse -File |
+            ForEach-Object {
+              $relative = $_.FullName.Substring($dest.Length).TrimStart('\','/')
+              "{0} | {1} bytes" -f $relative, $_.Length
+            } | Out-File $report -Append -Encoding utf8
+          "ROOT FILES:" | Out-File $report -Append -Encoding utf8
+          Get-ChildItem -Path $dest -Force |
+            ForEach-Object { $_.Name } | Out-File $report -Append -Encoding utf8
+          Get-Content $report
+
+      - name: Upload archive manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: alice-archive-manifest
+          path: archive_manifest.txt
+          if-no-files-found: error
